@@ -1,0 +1,46 @@
+{
+  "name": "dmitry-ui",
+  "version": "1.2.0",
+  "description": "Dmitry AI Assistant - Electron UI",
+  "main": "main.js",
+  "scripts": {
+    "start": "npm run dev",
+    "dev": "concurrently \"npm run react-dev\" \"wait-on http://127.0.0.1:3000 && electron .\"",
+    "react-dev": "react-scripts start",
+    "build": "react-scripts build && electron-builder",
+    "test": "react-scripts test"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-scripts": "5.0.1",
+    "lucide-react": "^0.300.0",
+    "framer-motion": "^10.16.16"
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1",
+    "concurrently": "^8.2.2",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.dmitry.assistant",
+    "productName": "Dmitry",
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "public/icon.ico"
+    }
+  },
+  "browserslist": {
+    "production": [
+      "last 1 electron version"
+    ],
+    "development": [
+      "last 1 electron version"
+    ]
+  },
+  "homepage": "./"
+}

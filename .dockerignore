@@ -1,0 +1,53 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+logs/
+*.log
+
+# Environment
+.env
+.env.local
+
+# Documentation
+*.md
+docs/
+
+# Tests
+tests/
+pytest.ini
+
+# Node modules (for UI)
+dmitry-ui/node_modules/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
+*.tmp

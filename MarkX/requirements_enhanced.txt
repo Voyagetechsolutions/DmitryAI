@@ -1,0 +1,15 @@
+# Enhanced Features Requirements
+# Add these to your existing requirements.txt
+
+# OCR and Computer Vision
+pytesseract>=0.3.10
+opencv-python>=4.8.0
+Pillow>=10.0.0
+
+# Screen capture (already might be installed)
+mss>=9.0.1
+
+# Note: You'll also need to install Tesseract OCR binary:
+# Windows: Download from https://github.com/UB-Mannheim/tesseract/wiki
+# Linux: sudo apt install tesseract-ocr
+# macOS: brew install tesseract

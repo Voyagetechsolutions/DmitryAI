@@ -1,0 +1,105 @@
+version: '3.8'
+
+services:
+  # Dmitry AI Agent
+  dmitry-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dmitry-agent
+    ports:
+      - "8765:8765"
+    environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - DMITRY_MODEL=${DMITRY_MODEL:-google/gemini-2.0-flash-001}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - API_RATE_LIMIT=${API_RATE_LIMIT:-100}
+      - REDIS_URL=redis://redis:6379
+      - CHROMA_URL=http://chromadb:8000
+    volumes:
+      - ./MarkX:/app
+      - dmitry-logs:/app/logs
+      - dmitry-knowledge:/app/knowledge_base
+      - dmitry-memory:/app/memory
+    depends_on:
+      - redis
+      - chromadb
+    restart: unless-stopped
+    networks:
+      - dmitry-network
+
+  # ChromaDB for vector storage
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: dmitry-chromadb
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma-data:/chroma/chroma
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
+    restart: unless-stopped
+    networks:
+      - dmitry-network
+
+  # Redis for caching and rate limiting
+  redis:
+    image: redis:7-alpine
+    container_name: dmitry-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+    networks:
+      - dmitry-network
+
+  # Prometheus for metrics
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: dmitry-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    restart: unless-stopped
+    networks:
+      - dmitry-network
+
+  # Grafana for dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: dmitry-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    networks:
+      - dmitry-network
+
+volumes:
+  dmitry-logs:
+  dmitry-knowledge:
+  dmitry-memory:
+  chroma-data:
+  redis-data:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  dmitry-network:
+    driver: bridge

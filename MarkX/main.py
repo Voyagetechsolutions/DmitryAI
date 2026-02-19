@@ -1,186 +1,185 @@
+# main.py - Dmitry v1.2 (Operator Enabled)
+"""
+Dmitry - AI System & Security Assistant
+
+A multi-modal AI assistant with:
+- Cognitive modes for different task types
+- Operator System (Hands & Eyes)
+- Unrestricted Action Execution
+- Knowledge retrieval (RAG)
+"""
+
 import asyncio
+import os
 import threading
+from typing import Optional
 
+# Core components
 from speech_to_text import record_voice, stop_listening_flag
-from llm import get_llm_output
+from llm import DmitryLLM
 from tts import edge_speak, stop_speaking
-from ui import JarvisUI
+from ui import DmitryUI
+from dmitry_operator import DmitryOrchestrator, OrchestratorResult
 
-from actions.open_app import open_app
-from actions.web_search import web_search
-from actions.weather_report import weather_action
-from actions.send_message import send_message  
+# Modes
+from modes import ModeManager
 
+# Knowledge
+from knowledge import VectorStore, KnowledgeRetriever, DocumentIngester
+
+# Memory
 from memory.memory_manager import load_memory, update_memory
 from memory.temporary_memory import TemporaryMemory
 
-interrupt_commands = ["mute", "quit", "exit", "stop"]
+# Interrupt commands
+INTERRUPT_COMMANDS = ["mute", "quit", "exit", "stop"]
+
+# Mode switch commands
+MODE_SWITCH_KEYWORDS = {
+    "architect mode": "architect",
+    "developer mode": "developer",
+    "dev mode": "developer",
+    "research mode": "research",
+    "security mode": "security",
+    "simulation mode": "simulation",
+    "general mode": "general",
+    "normal mode": "general",
+    "utility mode": "utility",
+}
 
 
-temp_memory = TemporaryMemory()
+class Dmitry:
+    """Main Dmitry assistant class."""
+    
+    def __init__(self, ui: DmitryUI):
+        self.ui = ui
+        self.mode_manager = ModeManager()
+        
+        self.vector_store = VectorStore("knowledge_base")
+        self.retriever = KnowledgeRetriever(self.vector_store)
+        self.ingester = DocumentIngester(self.vector_store)
+        
+        self.llm = DmitryLLM(
+            mode_manager=self.mode_manager,
+            knowledge_retriever=self.retriever,
+        )
+        
+        self.orchestrator = DmitryOrchestrator(
+            llm=self.llm,
+            on_action_start=self._on_action_start,
+            on_action_complete=self._on_action_complete,
+            on_confirmation_needed=self._on_confirmation_needed,
+        )
+        
+        self.logger = self.ui.write_log
+        self.temp_memory = TemporaryMemory()
+        self._update_mode_ui()
+    
+    def _on_action_start(self, message: str):
+        self.ui.show_tool_execution(message, "running")
+    
+    def _on_action_complete(self, message: str, success: bool):
+        self.ui.show_tool_execution(message, "success" if success else "failed")
+    
+    def _on_confirmation_needed(self, message: str) -> bool:
+        return True  # Auto-confirm in God Mode
+    
+    def _update_mode_ui(self) -> None:
+        mode = self.mode_manager.current_mode
+        self.ui.set_mode(mode.name, mode.icon)
+    
+    def _check_mode_switch(self, user_text: str) -> bool:
+        text_lower = user_text.lower()
+        for keyword, mode_name in MODE_SWITCH_KEYWORDS.items():
+            if keyword in text_lower:
+                success, message = self.mode_manager.switch_mode(mode_name)
+                if success:
+                    self._update_mode_ui()
+                    self.ui.write_log(f"AI: {message}", "ai")
+                    edge_speak(message, self.ui)
+                    return True
+        return False
+    
+    def process_input(self, user_text: str) -> None:
+        if not user_text:
+            return
+        
+        if any(cmd in user_text.lower() for cmd in INTERRUPT_COMMANDS):
+            stop_speaking()
+            self.temp_memory.reset()
+            return
+        
+        self.ui.write_log(f"You: {user_text}", "user")
+        
+        if self._check_mode_switch(user_text):
+            return
+        
+        self.temp_memory.set_last_user_text(user_text)
+        
+        long_term_memory = load_memory()
+        memory_context = {} 
+        identity = long_term_memory.get("identity", {})
+        if "name" in identity:
+            memory_context["user_name"] = identity["name"].get("value")
+            
+        history = [
+            {"role": m["role"], "text": m["text"]}
+            for m in self.temp_memory.conversation_history[-5:]
+        ]
+        
+        try:
+            result = self.orchestrator.process(
+                user_text,
+                memory_context=memory_context,
+                conversation_history=history
+            )
+            
+            response_text = result.content
+            
+            if result.raw_response and result.raw_response.get("memory_update"):
+                update_memory(result.raw_response["memory_update"])
+            
+            self.temp_memory.set_last_ai_response(response_text)
+            
+            if response_text:
+                prefix = "ACTION: " if result.type == "action" else "AI: "
+                self.ui.write_log(f"{prefix}{response_text}", "ai")
+                edge_speak(response_text, self.ui)
+                
+        except Exception as e:
+            self.ui.write_log(f"AI ERROR: {e}", "error")
+            print(f"Error processing input: {e}")
 
 
 async def get_voice_input():
     return await asyncio.to_thread(record_voice)
 
 
-async def ai_loop(ui: JarvisUI):
+async def ai_loop(dmitry: Dmitry):
+    print("Voice loop started")
     while True:
         stop_listening_flag.clear()
         user_text = await get_voice_input()
-
-        if not user_text:
-            continue
-
-
-        if any(cmd in user_text.lower() for cmd in interrupt_commands):
-            stop_speaking()
-            temp_memory.reset()
-            continue
-
-        ui.write_log(f"You: {user_text}")
-
-
-        if temp_memory.get_current_question():
-            param = temp_memory.get_current_question()
-            temp_memory.update_parameters({param: user_text})
-            temp_memory.clear_current_question()
-            user_text = temp_memory.get_last_user_text()
         
-        temp_memory.set_last_user_text(user_text)
-
-        long_term_memory = load_memory()
-
-        def minimal_memory_for_prompt(memory: dict) -> dict:
-            result = {}
-            identity = memory.get("identity", {})
-            preferences = memory.get("preferences", {})
-            relationships = memory.get("relationships", {})
-            emotional_state = memory.get("emotional_state", {})
-
-            if "name" in identity:
-                result["user_name"] = identity["name"].get("value")
-
-            for k in ["favorite_color", "favorite_food", "favorite_music"]:
-                if k in preferences:
-                    val = preferences[k].get("value")
-                    if isinstance(val, dict) and "value" in val:
-                        val = val["value"]
-                    result[k] = val
-
-            for rel, info in relationships.items():
-                if isinstance(info, dict) and "name" in info and "value" in info["name"]:
-                    result[f"{rel}_name"] = info["name"]["value"]
-
-            for event, info in emotional_state.items():
-                if "value" in info:
-                    result[f"emotion_{event}"] = info["value"]
-
-            return {k: v for k, v in result.items() if v}
-
-        memory_for_prompt = minimal_memory_for_prompt(long_term_memory)
+        if user_text:
+            dmitry.process_input(user_text)
         
-        history_lines = temp_memory.get_history_for_prompt()
-        recent_history = "\n".join(history_lines.split("\n")[-5:])
-        if recent_history:
-            memory_for_prompt["recent_conversation"] = recent_history
-
-        if temp_memory.has_pending_intent():
-            memory_for_prompt["_pending_intent"] = temp_memory.pending_intent
-            memory_for_prompt["_collected_params"] = str(temp_memory.get_parameters())
-
-        try:
-            llm_output = get_llm_output(
-                user_text=user_text, 
-                memory_block=memory_for_prompt
-            )
-        except Exception as e:
-            ui.write_log(f"AI ERROR: {e}")
-            continue
-
-        intent = llm_output.get("intent", "chat")
-        parameters = llm_output.get("parameters", {})
-        response = llm_output.get("text")
-        memory_update = llm_output.get("memory_update")
-
-        if memory_update and isinstance(memory_update, dict):
-            update_memory(memory_update)
-
-        temp_memory.set_last_ai_response(response)
-
-        if intent == "send_message":
-            temp_memory.set_pending_intent("send_message")
-            temp_memory.update_parameters(parameters)
-
-            all_params_ready = all(temp_memory.get_parameter(p) for p in ["receiver", "message_text", "platform"])
-            if all_params_ready:
-                threading.Thread(
-                    target=send_message,
-                    kwargs={
-                        "parameters": temp_memory.get_parameters(),
-                        "player": ui,
-                        "session_memory": temp_memory
-                    },
-                    daemon=True
-                ).start()
-
-        elif intent == "open_app":
-            app_name = parameters.get("app_name")
-            if app_name:
-                threading.Thread(
-                    target=open_app,
-                    kwargs={
-                        "parameters": parameters,
-                        "response": response,
-                        "player": ui,
-                        "session_memory": temp_memory
-                    },
-                    daemon=True
-                ).start()
-
-        elif intent == "weather_report":
-            city = parameters.get("city")
-            time = parameters.get("time")
-            if city:
-                threading.Thread(
-                    target=weather_action,
-                    kwargs={
-                        "parameters": parameters,
-                        "player": ui,
-                        "session_memory": temp_memory
-                    },
-                    daemon=True
-                ).start()
-
-        elif intent == "search":
-            query = parameters.get("query")
-            if query:
-                threading.Thread(
-                    target=web_search,
-                    kwargs={
-                        "parameters": parameters,
-                        "player": ui,
-                        "session_memory": temp_memory,
-                        "api_key": "API_KEY"
-                    },
-                    daemon=True
-                ).start()
-
-        else:
-            if response:
-                ui.write_log(f"AI: {response}")
-                edge_speak(response, ui)
-
         await asyncio.sleep(0.01)
 
 
 def main():
-    ui = JarvisUI("face.png", size=(900, 900))
-
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    face_path = os.path.join(base_dir, "face.png")
+    
+    ui = DmitryUI(face_path, size=(900, 900))
+    dmitry = Dmitry(ui)
+    
     def runner():
-        asyncio.run(ai_loop(ui))
-
-    threading.Thread(target=runner, daemon=True).start()
+        asyncio.run(ai_loop(dmitry))
+    
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    
     ui.root.mainloop()
 
 

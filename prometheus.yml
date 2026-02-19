@@ -1,0 +1,40 @@
+# Prometheus Configuration for Dmitry
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'dmitry-monitor'
+
+# Alerting configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+# Scrape configurations
+scrape_configs:
+  # Dmitry Agent metrics
+  - job_name: 'dmitry-agent'
+    static_configs:
+      - targets: ['dmitry-agent:8765']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Redis metrics
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+
+  # ChromaDB metrics
+  - job_name: 'chromadb'
+    static_configs:
+      - targets: ['chromadb:8000']
+
+# Recording rules
+rule_files:
+  - 'alerts.yml'

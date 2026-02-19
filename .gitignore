@@ -1,0 +1,85 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# Environment Variables - CRITICAL
+MarkX/.env
+**/.env
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+MarkX/logs/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# ChromaDB
+knowledge_base/
+MarkX/knowledge_base/
+
+# Memory & Cache
+memory/
+MarkX/memory/
+*.cache
+
+# Test Coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Node modules (for Electron UI)
+dmitry-ui/node_modules/
+dmitry-ui/build/
+dmitry-ui/dist/
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Security & Secrets
+*.pem
+*.key
+*.crt
+secrets/
+credentials/

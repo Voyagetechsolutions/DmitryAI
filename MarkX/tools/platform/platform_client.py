@@ -125,7 +125,7 @@ class PlatformClient:
     
     def _request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
         """
-        Make HTTP request to Platform API with circuit breaker.
+        Make HTTP request to Platform API with circuit breaker and call ledger.
         
         Args:
             method: HTTP method
@@ -133,39 +133,146 @@ class PlatformClient:
             **kwargs: Additional request parameters
             
         Returns:
-            Response data or error dict
+            Response data or error dict with call_id
         """
+        import time
+        start_time = time.time()
+        
+        # Extract args for ledger
+        args = {
+            "method": method,
+            "endpoint": endpoint,
+            "params": kwargs.get("params", {}),
+            "json": kwargs.get("json", {}),
+        }
+        
+        # Get request context
+        request_id = kwargs.get("headers", {}).get("X-Trace-ID", "unknown")
+        
         try:
-            return self.circuit_breaker.call(self._do_request, method, endpoint, **kwargs)
+            response_data = self.circuit_breaker.call(self._do_request, method, endpoint, **kwargs)
+            latency_ms = int((time.time() - start_time) * 1000)
+            
+            # Record successful call in ledger
+            from core.call_ledger import record_platform_call
+            call_id = record_platform_call(
+                endpoint=endpoint,
+                args=args,
+                response=response_data,
+                status="success",
+                latency_ms=latency_ms,
+                request_id=request_id,
+                tenant_id=self.tenant_id,
+            )
+            
+            # Add call_id to response
+            response_data["_call_id"] = call_id
+            return response_data
+            
         except CircuitBreakerOpen as e:
-            return {
+            latency_ms = int((time.time() - start_time) * 1000)
+            error_response = {
                 "error": "Platform temporarily unavailable (circuit breaker open)",
                 "connected": False,
                 "circuit_breaker": "open"
             }
+            
+            # Record failed call
+            from core.call_ledger import record_platform_call
+            call_id = record_platform_call(
+                endpoint=endpoint,
+                args=args,
+                response=error_response,
+                status="error",
+                latency_ms=latency_ms,
+                request_id=request_id,
+                tenant_id=self.tenant_id,
+            )
+            error_response["_call_id"] = call_id
+            return error_response
+            
         except requests.exceptions.ConnectionError:
-            return {
+            latency_ms = int((time.time() - start_time) * 1000)
+            error_response = {
                 "error": "Platform connection failed",
                 "connected": False
             }
+            
+            from core.call_ledger import record_platform_call
+            call_id = record_platform_call(
+                endpoint=endpoint,
+                args=args,
+                response=error_response,
+                status="error",
+                latency_ms=latency_ms,
+                request_id=request_id,
+                tenant_id=self.tenant_id,
+            )
+            error_response["_call_id"] = call_id
+            return error_response
+            
         except requests.exceptions.Timeout:
-            return {
+            latency_ms = int((time.time() - start_time) * 1000)
+            error_response = {
                 "error": "Platform request timeout",
                 "connected": False
             }
+            
+            from core.call_ledger import record_platform_call
+            call_id = record_platform_call(
+                endpoint=endpoint,
+                args=args,
+                response=error_response,
+                status="timeout",
+                latency_ms=latency_ms,
+                request_id=request_id,
+                tenant_id=self.tenant_id,
+            )
+            error_response["_call_id"] = call_id
+            return error_response
+            
         except requests.exceptions.HTTPError as e:
+            latency_ms = int((time.time() - start_time) * 1000)
             sanitized_error = self._sanitize_error(str(e))
-            return {
+            error_response = {
                 "error": f"Platform HTTP error: {e.response.status_code}",
                 "status_code": e.response.status_code,
                 "connected": False
             }
+            
+            from core.call_ledger import record_platform_call
+            call_id = record_platform_call(
+                endpoint=endpoint,
+                args=args,
+                response=error_response,
+                status="error",
+                latency_ms=latency_ms,
+                request_id=request_id,
+                tenant_id=self.tenant_id,
+            )
+            error_response["_call_id"] = call_id
+            return error_response
+            
         except Exception as e:
+            latency_ms = int((time.time() - start_time) * 1000)
             sanitized_error = self._sanitize_error(str(e))
-            return {
+            error_response = {
                 "error": f"Platform error: {sanitized_error}",
                 "connected": False
             }
+            
+            from core.call_ledger import record_platform_call
+            call_id = record_platform_call(
+                endpoint=endpoint,
+                args=args,
+                response=error_response,
+                status="error",
+                latency_ms=latency_ms,
+                request_id=request_id,
+                tenant_id=self.tenant_id,
+            )
+            error_response["_call_id"] = call_id
+            return error_response
     
     # ========== RISK FINDINGS ==========
     

@@ -26,6 +26,8 @@ class Session:
     ip_address: Optional[str] = None
     user_agent: Optional[str] = None
     last_activity: datetime = field(default_factory=datetime.utcnow)
+    service_role: Optional[str] = None  # For service-to-service auth
+    tenant_id: Optional[str] = None  # For multi-tenant isolation
 
 
 @dataclass
@@ -82,14 +84,18 @@ class AuthManager:
         user_id: str,
         expires_hours: Optional[int] = None,
         additional_claims: Optional[Dict[str, Any]] = None,
+        service_role: Optional[str] = None,
+        tenant_id: Optional[str] = None,
     ) -> str:
         """
-        Generate a JWT token for a user.
+        Generate a JWT token for a user or service.
         
         Args:
-            user_id: Unique user identifier
+            user_id: Unique user/service identifier
             expires_hours: Token expiry (uses default if not provided)
             additional_claims: Extra claims to include in token
+            service_role: Service role (platform, dmitry, pdri, aegis)
+            tenant_id: Tenant identifier for multi-tenant deployments
             
         Returns:
             JWT token string
@@ -104,6 +110,12 @@ class AuthManager:
             "jti": secrets.token_urlsafe(16),  # JWT ID for revocation
         }
         
+        if service_role:
+            payload["service_role"] = service_role
+        
+        if tenant_id:
+            payload["tenant_id"] = tenant_id
+        
         if additional_claims:
             payload.update(additional_claims)
         
@@ -115,6 +127,8 @@ class AuthManager:
             token=token,
             created_at=datetime.utcnow(),
             expires_at=expiry,
+            service_role=service_role,
+            tenant_id=tenant_id,
         )
         self.sessions[token] = session
         
@@ -269,6 +283,54 @@ class AuthManager:
             ]),
             "total_rate_limit_entries": len(self.rate_limits),
         }
+    
+    def verify_service_role(self, token: str, required_role: str) -> bool:
+        """
+        Verify that a token has the required service role.
+        
+        Args:
+            token: JWT token
+            required_role: Required service role (platform, dmitry, pdri, aegis)
+            
+        Returns:
+            True if token has required role
+        """
+        payload = self.verify_token(token)
+        if not payload:
+            return False
+        
+        service_role = payload.get("service_role")
+        
+        # Platform has access to everything
+        if service_role == "platform":
+            return True
+        
+        # Check specific role
+        return service_role == required_role
+    
+    def verify_tenant_access(self, token: str, tenant_id: str) -> bool:
+        """
+        Verify that a token has access to the specified tenant.
+        
+        Args:
+            token: JWT token
+            tenant_id: Tenant identifier
+            
+        Returns:
+            True if token has access to tenant
+        """
+        payload = self.verify_token(token)
+        if not payload:
+            return False
+        
+        token_tenant = payload.get("tenant_id")
+        
+        # No tenant restriction
+        if not token_tenant:
+            return True
+        
+        # Check tenant match
+        return token_tenant == tenant_id
 
 
 # Global instance

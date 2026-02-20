@@ -1,35 +1,48 @@
-# main.py - Dmitry v1.2 (Operator Enabled)
+# main.py - Dmitry v1.2 (Production Ready)
 """
-Dmitry - AI System & Security Assistant
+Dmitry - AI Security Agent
 
-A multi-modal AI assistant with:
-- Cognitive modes for different task types
-- Operator System (Hands & Eyes)
-- Unrestricted Action Execution
-- Knowledge retrieval (RAG)
+Production-ready AI agent with:
+- Trust enforcement (call ledger, action safety, input/output validation)
+- Platform integration (circuit breaker, retry logic, connection pooling)
+- Service mesh (registration, heartbeat, health endpoints)
+- Observability (structured logging, distributed tracing)
+- Type-safe configuration
 """
 
 import asyncio
 import os
+import sys
 import threading
+from pathlib import Path
 from typing import Optional
 
-# Core components
-from speech_to_text import record_voice, stop_listening_flag
-from llm import DmitryLLM
-from tts import edge_speak, stop_speaking
-from ui import DmitryUI
-from dmitry_operator import DmitryOrchestrator, OrchestratorResult
+# Add current directory to path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Modes
-from modes import ModeManager
+# NEW: Configuration, Logging, Tracing
+from config import get_settings
+from core.logging import setup_logging, get_logger
+from core.tracing import setup_tracing
 
-# Knowledge
-from knowledge import VectorStore, KnowledgeRetriever, DocumentIngester
+# HTTP Server
+from agent.server import AgentServer
 
-# Memory
-from memory.memory_manager import load_memory, update_memory
-from memory.temporary_memory import TemporaryMemory
+# Core components (if available)
+try:
+    from speech_to_text import record_voice, stop_listening_flag
+    from llm import DmitryLLM
+    from tts import edge_speak, stop_speaking
+    from ui import DmitryUI
+    from dmitry_operator import DmitryOrchestrator, OrchestratorResult
+    from modes import ModeManager
+    from knowledge import VectorStore, KnowledgeRetriever, DocumentIngester
+    from memory.memory_manager import load_memory, update_memory
+    from memory.temporary_memory import TemporaryMemory
+    VOICE_UI_AVAILABLE = True
+except ImportError:
+    VOICE_UI_AVAILABLE = False
+    print("⚠️  Voice UI components not available. Running in server-only mode.")
 
 # Interrupt commands
 INTERRUPT_COMMANDS = ["mute", "quit", "exit", "stop"]
@@ -49,7 +62,7 @@ MODE_SWITCH_KEYWORDS = {
 
 
 class Dmitry:
-    """Main Dmitry assistant class."""
+    """Main Dmitry assistant class (Voice UI mode)."""
     
     def __init__(self, ui: DmitryUI):
         self.ui = ui
@@ -152,10 +165,12 @@ class Dmitry:
 
 
 async def get_voice_input():
+    """Get voice input asynchronously."""
     return await asyncio.to_thread(record_voice)
 
 
 async def ai_loop(dmitry: Dmitry):
+    """Voice UI loop."""
     print("Voice loop started")
     while True:
         stop_listening_flag.clear()
@@ -167,7 +182,12 @@ async def ai_loop(dmitry: Dmitry):
         await asyncio.sleep(0.01)
 
 
-def main():
+def start_voice_ui():
+    """Start voice UI mode (optional)."""
+    if not VOICE_UI_AVAILABLE:
+        print("❌ Voice UI components not available")
+        return
+    
     base_dir = os.path.dirname(os.path.abspath(__file__))
     face_path = os.path.join(base_dir, "face.png")
     
@@ -181,6 +201,105 @@ def main():
     thread.start()
     
     ui.root.mainloop()
+
+
+def main():
+    """Main entry point with configuration, logging, and tracing."""
+    
+    # Load configuration
+    settings = get_settings()
+    
+    # Setup logging
+    setup_logging(
+        log_level=settings.log_level,
+        log_dir=settings.log_dir if settings.log_level == "DEBUG" else None,
+        json_logs=settings.is_production,
+        enable_console=True
+    )
+    logger = get_logger(__name__)
+    
+    logger.info(
+        "dmitry_starting",
+        version="1.2.0",
+        port=settings.dmitry_port,
+        platform_url=settings.platform_url,
+        is_production=settings.is_production
+    )
+    
+    # Setup tracing (if enabled)
+    if settings.enable_tracing and settings.otel_exporter_otlp_endpoint:
+        setup_tracing(
+            service_name=settings.service_name,
+            service_version="1.2.0",
+            otlp_endpoint=settings.otel_exporter_otlp_endpoint,
+            enable_console=settings.debug
+        )
+        logger.info("tracing_enabled", endpoint=settings.otel_exporter_otlp_endpoint)
+    
+    # Start HTTP server
+    server = AgentServer(
+        port=settings.dmitry_port,
+        platform_url=settings.platform_url
+    )
+    
+    # Set up orchestrator if voice UI available
+    if VOICE_UI_AVAILABLE:
+        try:
+            mode_manager = ModeManager()
+            vector_store = VectorStore("knowledge_base")
+            retriever = KnowledgeRetriever(vector_store)
+            
+            llm = DmitryLLM(
+                mode_manager=mode_manager,
+                knowledge_retriever=retriever,
+            )
+            
+            orchestrator = DmitryOrchestrator(llm=llm)
+            server.set_orchestrator(orchestrator)
+            
+            logger.info("orchestrator_configured", mode="voice_ui")
+        except Exception as e:
+            logger.warning("orchestrator_setup_failed", error=str(e))
+    
+    # Start server
+    try:
+        server.start()
+        logger.info(
+            "server_started",
+            url=f"http://127.0.0.1:{settings.dmitry_port}",
+            platform_registered=settings.platform_url is not None
+        )
+        
+        print(f"\n{'='*60}")
+        print(f"🚀 Dmitry v1.2.0 - Production Ready")
+        print(f"{'='*60}")
+        print(f"✓ Server: http://127.0.0.1:{settings.dmitry_port}")
+        print(f"✓ Health: http://127.0.0.1:{settings.dmitry_port}/health")
+        print(f"✓ Docs: http://127.0.0.1:{settings.dmitry_port}/version")
+        if settings.platform_url:
+            print(f"✓ Platform: {settings.platform_url}")
+        print(f"✓ Log Level: {settings.log_level}")
+        if settings.enable_tracing:
+            print(f"✓ Tracing: Enabled")
+        print(f"{'='*60}")
+        print(f"\nPress Ctrl+C to stop\n")
+        
+        # Keep running
+        try:
+            while True:
+                import time
+                time.sleep(1)
+        except KeyboardInterrupt:
+            logger.info("shutdown_requested")
+            print("\n\nShutting down gracefully...")
+            server.stop()
+            logger.info("shutdown_complete")
+            print("✓ Shutdown complete")
+            
+    except Exception as e:
+        logger.error("startup_failed", error=str(e))
+        print(f"\n❌ Failed to start server: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

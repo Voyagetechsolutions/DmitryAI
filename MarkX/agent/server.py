@@ -129,6 +129,8 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
             self._handle_health()
         elif path == "/ready":
             self._handle_ready()
+        elif path == "/live":
+            self._handle_live()
         elif path == "/version":
             self._handle_version()
         elif path == "/metrics":
@@ -452,46 +454,69 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
         Handle action proposal request.
         
         POST /advise
+        Request (AdviseRequest model):
         {
-            "context": {
-                "incident_id": "inc-123",
-                "entity_id": "customer-db",
-                "risk_score": 85
+            "finding_id": "find-456",
+            "tenant_id": "tenant-1",
+            "entity": {
+                "type": "database",
+                "id": "customer-db",
+                "name": "Customer Database",
+                "attributes": {}
             },
-            "question": "What should we do?"
+            "severity": "high",
+            "risk_score": 85.0,
+            "exposure_paths": [...],
+            "evidence_refs": ["evt-123", "find-456"],
+            "policy_context": {}
         }
         
-        Response:
+        Response (AdviseResponse model):
         {
-            "recommended_actions": [
-                {
-                    "action": "isolate_entity",
-                    "target": "customer-db",
-                    "reason": "High risk score detected",
-                    "risk_reduction_estimate": 0.35,
-                    "confidence": 0.85,
-                    "priority": "HIGH",
-                    "approval_required": true,
-                    "blast_radius": "entity_only",
-                    "impact_level": "high",
-                    "evidence_count": 3
-                }
-            ],
-            "reasoning": "...",
-            "sources": [...],
-            "confidence": 0.82,
-            "schema_version": "1.0",
-            "producer_version": "1.2"
+            "summary": "High risk detected on customer-db...",
+            "risk_factors": [...],
+            "impact_analysis": "...",
+            "recommended_actions": [...],
+            "evidence_chain": [...],
+            "confidence": 0.87,
+            "citations": [...],
+            "processing_time_ms": 245
         }
         """
+        import time
+        start_time = time.time()
+        
         try:
             data = self._read_json()
-            context = data.get("context", {})
-            question = data.get("question", "What actions should be taken?")
+            
+            # Validate against AdviseRequest schema
+            from shared.contracts.dmitry import AdviseRequest
+            try:
+                request = AdviseRequest(**data)
+            except Exception as e:
+                self._send_json({
+                    "error": "Invalid request format",
+                    "details": str(e),
+                    "schema_version": "1.0",
+                    "producer_version": "1.2"
+                }, 400)
+                return
             
             # Generate request ID for tracing
             import uuid
             request_id = str(uuid.uuid4())
+            
+            # Build context from request
+            context = {
+                "finding_id": request.finding_id,
+                "tenant_id": request.tenant_id,
+                "entity_id": request.entity.id,
+                "entity_type": request.entity.type,
+                "entity_name": request.entity.name,
+                "severity": request.severity,
+                "risk_score": request.risk_score,
+                "evidence_refs": request.evidence_refs,
+            }
             
             # CRITICAL: Sanitize input BEFORE processing
             from core.input_sanitizer import InputSanitizer
@@ -513,11 +538,21 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
             # Build advisory prompt with structured output request
             from core.structured_actions import get_structured_prompt_suffix
             
-            prompt = f"Based on this context, recommend security actions:\n\n"
-            for key, value in context.items():
-                prompt += f"- {key}: {value}\n"
-            prompt += f"\nQuestion: {question}\n\n"
-            prompt += "Provide specific, actionable recommendations."
+            prompt = f"""Analyze this security finding and provide recommendations:
+
+Finding ID: {request.finding_id}
+Entity: {request.entity.name} ({request.entity.type})
+Severity: {request.severity}
+Risk Score: {request.risk_score}/100
+Evidence: {', '.join(request.evidence_refs)}
+
+Provide:
+1. Summary of the risk
+2. Key risk factors
+3. Impact analysis
+4. Specific actionable recommendations
+
+"""
             prompt += get_structured_prompt_suffix()
             
             # Process through orchestrator
@@ -539,38 +574,53 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                 if actions:
                     actions = enrich_actions_with_evidence(actions, evidence_chain)
                 
+                # Convert to AdviseResponse format
+                from shared.contracts.dmitry import RecommendedAction, RiskFactorExplanation
+                
+                # Extract risk factors from content
+                risk_factors = self._extract_risk_factors(result.content, request.severity, request.evidence_refs)
+                
+                # Convert actions to RecommendedAction format
+                recommended_actions = []
+                for action in actions:
+                    recommended_actions.append({
+                        "action_type": action.get("action", "unknown"),
+                        "target_type": context.get("entity_type", "unknown"),
+                        "target_id": action.get("target", "unknown"),
+                        "target_name": context.get("entity_name"),
+                        "reason": action.get("reason", ""),
+                        "confidence": action.get("confidence", 0.5),
+                        "evidence_refs": action.get("evidence_required", request.evidence_refs),
+                        "blast_radius": self._map_blast_radius(action.get("blast_radius", "entity_only")),
+                        "priority": self._map_priority(action.get("priority", "MEDIUM")),
+                    })
+                
+                # Build response
+                processing_time = int((time.time() - start_time) * 1000)
+                
                 response = {
-                    "recommended_actions": actions,
-                    "reasoning": self._extract_reasoning(result),
-                    "sources": self._extract_sources(result, request_id),
+                    "summary": self._extract_summary(result.content),
+                    "risk_factors": risk_factors,
+                    "impact_analysis": self._extract_impact_analysis(result.content, request.risk_score),
+                    "recommended_actions": recommended_actions,
+                    "evidence_chain": self._format_evidence_chain(evidence_chain),
                     "confidence": self._calculate_confidence(result, request_id),
-                    "data_dependencies": self._extract_dependencies(result, request_id),
-                    "evidence_chain": evidence_chain.to_dict(),
-                    "request_id": request_id,
-                    "schema_version": "1.0",
-                    "producer_version": "1.2"
+                    "citations": self._extract_citations(result, request_id),
+                    "processing_time_ms": processing_time,
                 }
                 
-                # CRITICAL: Validate output BEFORE returning
-                from core.output_validator import OutputValidator
-                
-                validation = OutputValidator.validate_advise_response(response, request_id)
-                
-                if not validation.is_valid:
-                    # Output validation failed - return error instead of invalid data
+                # Validate against AdviseResponse schema
+                from shared.contracts.dmitry import AdviseResponse
+                try:
+                    validated_response = AdviseResponse(**response)
+                    self._send_json(validated_response.dict())
+                except Exception as e:
                     self._send_json({
-                        "error": "Output validation failed",
-                        "validation_errors": validation.errors,
+                        "error": "Response validation failed",
+                        "details": str(e),
                         "schema_version": "1.0",
                         "producer_version": "1.2"
                     }, 500)
-                    return
-                
-                # Add warnings if any
-                if validation.warnings:
-                    response["_warnings"] = validation.warnings
-                
-                self._send_json(response)
             else:
                 self._send_json({
                     "error": "Orchestrator not configured",
@@ -587,29 +637,70 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
     
     def _handle_health(self):
         """
-        Basic health check.
+        Detailed health check with dependencies.
         
         GET /health
-        Response:
+        Response (ServiceHealth model):
         {
+            "service": "dmitry",
             "status": "healthy",
             "version": "1.2",
-            "uptime": 3600
+            "uptime_seconds": 3600.5,
+            "checks": {
+                "llm": true,
+                "platform": true,
+                "call_ledger": true
+            },
+            "timestamp": "2026-02-19T10:30:00Z"
         }
         """
         import time
-        uptime = int(time.time() - agent_state.start_time) if hasattr(agent_state, 'start_time') else 0
+        uptime = time.time() - agent_state.start_time if hasattr(agent_state, 'start_time') else 0
         
+        # Run health checks
+        checks = {}
+        status = "healthy"
+        
+        # Check LLM
+        if hasattr(agent_state, 'orchestrator') and agent_state.orchestrator:
+            checks["llm"] = True
+        else:
+            checks["llm"] = False
+            status = "degraded"
+        
+        # Check Platform connection
+        try:
+            from tools.platform.platform_client import get_platform_client
+            platform = get_platform_client()
+            checks["platform"] = platform.is_connected()
+            if not checks["platform"]:
+                status = "degraded"
+        except Exception:
+            checks["platform"] = False
+            status = "degraded"
+        
+        # Check call ledger
+        try:
+            from core.call_ledger import get_call_ledger
+            ledger = get_call_ledger()
+            checks["call_ledger"] = True
+        except Exception:
+            checks["call_ledger"] = False
+            status = "unhealthy"
+        
+        # Return ServiceHealth model format
         self._send_json({
-            "status": "healthy",
+            "service": "dmitry",
+            "status": status,
             "version": "1.2",
-            "uptime": uptime,
-            "timestamp": datetime.now().isoformat()
+            "uptime_seconds": uptime,
+            "checks": checks,
+            "timestamp": datetime.utcnow().isoformat() + "Z"
         })
     
     def _handle_ready(self):
         """
-        Readiness check with dependencies.
+        Readiness check with dependencies (Kubernetes probe).
         
         GET /ready
         Response:
@@ -639,12 +730,31 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                 dependencies["platform"] = "healthy"
             else:
                 dependencies["platform"] = "unavailable"
+                ready = False
         except Exception as e:
             dependencies["platform"] = "error"
+            ready = False
         
+        status_code = 200 if ready else 503
         self._send_json({
             "ready": ready,
             "dependencies": dependencies,
+            "timestamp": datetime.now().isoformat()
+        }, status_code)
+    
+    def _handle_live(self):
+        """
+        Liveness check (Kubernetes probe).
+        
+        GET /live
+        Response:
+        {
+            "alive": true
+        }
+        """
+        # Simple check - if we can respond, we're alive
+        self._send_json({
+            "alive": True,
             "timestamp": datetime.now().isoformat()
         })
     
@@ -879,6 +989,108 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
         # Use structured parser (tries JSON first, falls back to text)
         return parse_structured_actions(content, context, evidence_call_ids)
     
+    def _extract_risk_factors(self, content: str, severity: str, evidence_refs: list) -> list:
+        """Extract risk factors from LLM response."""
+        risk_factors = []
+        
+        # Parse content for risk factors
+        if "high risk" in content.lower() or severity.lower() == "high":
+            risk_factors.append({
+                "factor": "high_risk_score",
+                "severity": severity,
+                "description": "Elevated risk score detected",
+                "evidence": evidence_refs
+            })
+        
+        if "data" in content.lower() and ("leak" in content.lower() or "exposure" in content.lower()):
+            risk_factors.append({
+                "factor": "data_exposure",
+                "severity": severity,
+                "description": "Potential data exposure threat",
+                "evidence": evidence_refs
+            })
+        
+        if "access" in content.lower() and "unauthorized" in content.lower():
+            risk_factors.append({
+                "factor": "unauthorized_access",
+                "severity": severity,
+                "description": "Unauthorized access detected",
+                "evidence": evidence_refs
+            })
+        
+        # Default if none found
+        if not risk_factors:
+            risk_factors.append({
+                "factor": "security_concern",
+                "severity": severity,
+                "description": "Security concern identified",
+                "evidence": evidence_refs
+            })
+        
+        return risk_factors
+    
+    def _extract_summary(self, content: str) -> str:
+        """Extract summary from LLM response."""
+        # First sentence or first 200 chars
+        sentences = content.split(". ")
+        if sentences:
+            return sentences[0] + "."
+        return content[:200]
+    
+    def _extract_impact_analysis(self, content: str, risk_score: float) -> str:
+        """Extract impact analysis from LLM response."""
+        # Look for impact-related content
+        lines = content.split("\n")
+        for line in lines:
+            if "impact" in line.lower():
+                return line.strip()
+        
+        # Default based on risk score
+        if risk_score >= 80:
+            return "Critical impact - immediate action required to prevent data breach or service disruption."
+        elif risk_score >= 60:
+            return "High impact - prompt action needed to mitigate security risks."
+        elif risk_score >= 40:
+            return "Moderate impact - action recommended to reduce exposure."
+        else:
+            return "Low impact - monitoring and preventive measures advised."
+    
+    def _format_evidence_chain(self, evidence_chain) -> list:
+        """Format evidence chain for AdviseResponse."""
+        chain = []
+        
+        if hasattr(evidence_chain, 'event_id') and evidence_chain.event_id:
+            chain.append({"type": "event", "id": evidence_chain.event_id})
+        
+        if hasattr(evidence_chain, 'finding_id') and evidence_chain.finding_id:
+            chain.append({"type": "finding", "id": evidence_chain.finding_id})
+        
+        if hasattr(evidence_chain, 'call_ids'):
+            for call_id in evidence_chain.call_ids:
+                chain.append({"type": "platform_call", "id": call_id})
+        
+        return chain
+    
+    def _map_blast_radius(self, internal_radius: str) -> str:
+        """Map internal blast radius to Platform format."""
+        mapping = {
+            "entity_only": "low",
+            "segment": "medium",
+            "org_wide": "high",
+            "critical": "critical"
+        }
+        return mapping.get(internal_radius, "medium")
+    
+    def _map_priority(self, internal_priority: str) -> int:
+        """Map internal priority to Platform format (1-10)."""
+        mapping = {
+            "LOW": 3,
+            "MEDIUM": 5,
+            "HIGH": 8,
+            "CRITICAL": 10
+        }
+        return mapping.get(internal_priority, 5)
+    
     def log_message(self, format, *args):
         """Suppress default logging."""
         pass
@@ -891,17 +1103,33 @@ class AgentServer:
     
     DEFAULT_PORT = 8765
     
-    def __init__(self, port: int = None):
+    def __init__(self, port: int = None, platform_url: str = None):
         """
         Initialize agent server.
         
         Args:
             port: Port to listen on
+            platform_url: Platform URL for service registration
         """
         self.port = port or self.DEFAULT_PORT
         self._server = None
         self._thread = None
         self._running = False
+        self._registry = None
+        self._heartbeat_thread = None
+        
+        # Initialize service registry if platform_url provided
+        if platform_url:
+            from shared.registry import ServiceRegistry
+            self._registry = ServiceRegistry(
+                platform_url=platform_url,
+                service_name="dmitry",
+                service_type="dmitry",
+                service_url=f"http://127.0.0.1:{self.port}",
+                version="1.2",
+                capabilities=["chat", "advise", "vision", "security_tools", "platform_integration"],
+                heartbeat_interval=10,
+            )
     
     def set_message_handler(self, handler: Callable):
         """Set the message handler function (Legacy - now uses orchestrator)."""
@@ -945,15 +1173,39 @@ class AgentServer:
         self._thread.start()
         
         print(f"✓ Agent API server started on http://127.0.0.1:{self.port}")
+        
+        # Register with Platform if registry configured
+        if self._registry:
+            if self._registry.register():
+                # Start heartbeat thread
+                self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
+                self._heartbeat_thread.start()
+                print(f"✓ Registered with Platform, heartbeat started")
+            else:
+                print(f"⚠ Failed to register with Platform (continuing anyway)")
     
     def _run(self):
         """Server loop."""
         while self._running:
             self._server.handle_request()
     
+    def _heartbeat_loop(self):
+        """Send heartbeats to Platform."""
+        import time
+        while self._running:
+            if self._registry:
+                self._registry.send_heartbeat()
+            time.sleep(10)  # Every 10 seconds
+    
     def stop(self):
         """Stop the server."""
         self._running = False
+        
+        # Deregister from Platform
+        if self._registry:
+            self._registry.deregister()
+            print(f"✓ Deregistered from Platform")
+        
         if self._server:
             self._server.shutdown()
             self._server = None

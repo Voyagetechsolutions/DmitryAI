@@ -37,6 +37,17 @@ MarkX/.env
 *.swp
 *.swo
 *~
+.project
+.pydevproject
+.settings/
+
+# Ruff
+.ruff_cache/
+
+# Mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
 
 # OS
 .DS_Store
@@ -63,8 +74,14 @@ MarkX/memory/
 
 # Test Coverage
 .coverage
+.coverage.*
 htmlcov/
 .pytest_cache/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
 
 # Node modules (for Electron UI)
 dmitry-ui/node_modules/
